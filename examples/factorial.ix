@@ -1,0 +1,13 @@
+# Factorial with function declaration and call
+MOV n, 6
+CALL fact
+PRINT result
+HALT
+
+def fact:
+  MOV result, 1
+  while n > 1:
+    EVAL result * n
+    STORE result
+    n = n - 1
+  RET
