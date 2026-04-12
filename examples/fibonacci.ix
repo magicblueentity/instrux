@@ -1,0 +1,13 @@
+# Fibonacci in mixed low-level + pythonic style
+n = 10
+a = 0
+b = 1
+
+while n > 0:
+  print(a)
+  next = a + b
+  a = b
+  b = next
+  n = n - 1
+
+HALT
