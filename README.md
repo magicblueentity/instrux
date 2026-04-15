@@ -15,8 +15,10 @@ This version significantly expands the system:
 
 - Safe AST-based expression evaluation (no Python `eval`).
 - `if/else` blocks.
+- `elif` branches.
 - `def name:` function declarations compiled to labels.
 - Auto entry-point jump so function bodies are not executed at startup.
+- Loop controls: `break` and `continue`.
 - Stack ops: `DUP`, `SWAP`, `DROP`.
 - CLI features: `--debug`, `--dump-bytecode`, and `--repl`.
 - Built-in unit tests.
@@ -69,6 +71,19 @@ while n > 0:
   else:
     print(0)
   n = n - 1
+```
+
+### `elif`, `break`, and `continue`
+
+```ix
+i = 0
+while i < 10:
+  i = i + 1
+  if i % 2 == 0:
+    continue
+  elif i > 7:
+    break
+  print(i)
 ```
 
 ### Function declarations

@@ -166,6 +166,7 @@ class ControlNode:
     header: str
     body: List[object]
     else_body: Optional[List[object]] = None
+    elif_nodes: Optional[List["ControlNode"]] = None
     line_no: int = 0
 
 
@@ -236,6 +237,7 @@ class Parser:
                 child, i = self._parse_block(i, child_indent)
 
                 else_body = None
+                elif_nodes: List[ControlNode] = []
                 probe = i
                 while probe < len(self.lines):
                     maybe = self._normalize(self.lines[probe])
@@ -243,7 +245,21 @@ class Parser:
                         probe += 1
                         continue
                     probe_indent = self._indent(self.lines[probe], probe + 1)
-                    if probe_indent != base_indent or maybe.strip() != "else:":
+                    if probe_indent != base_indent:
+                        break
+                    stripped_maybe = maybe.strip()
+                    if stripped_maybe.startswith("elif ") and stripped_maybe.endswith(":"):
+                        elif_cond = stripped_maybe[len("elif ") : -1].strip()
+                        elif_header = f"if {elif_cond}"
+                        probe += 1
+                        elif_indent = self._next_child_indent(probe, base_indent)
+                        elif_body, i = self._parse_block(probe, elif_indent)
+                        elif_nodes.append(
+                            ControlNode(kind="if", header=elif_header, body=elif_body, line_no=probe + 1)
+                        )
+                        probe = i
+                        continue
+                    if stripped_maybe != "else:":
                         break
                     probe += 1
                     else_indent = self._next_child_indent(probe, base_indent)
@@ -251,7 +267,22 @@ class Parser:
                     break
 
                 kind = self._header_kind(header, i)
-                block.append(ControlNode(kind=kind, header=header, body=child, else_body=else_body, line_no=i + 1))
+                if kind == "if" and elif_nodes:
+                    terminal_else = else_body
+                    for elif_node in reversed(elif_nodes):
+                        elif_node.else_body = terminal_else
+                        terminal_else = [elif_node]
+                    else_body = terminal_else
+                block.append(
+                    ControlNode(
+                        kind=kind,
+                        header=header,
+                        body=child,
+                        else_body=else_body,
+                        elif_nodes=elif_nodes or None,
+                        line_no=i + 1,
+                    )
+                )
                 continue
 
             block.append(("inst", stripped, i + 1))
@@ -278,9 +309,22 @@ class Parser:
                 return prefix.strip()
         raise ParseError(f"Line {line_no}: unsupported block '{header}'")
 
-    def _compile_node(self, node: object) -> None:
+    def _compile_node(self, node: object, loop_stack: Optional[List[Tuple[str, str]]] = None) -> None:
+        if loop_stack is None:
+            loop_stack = []
+
         if isinstance(node, tuple):
             _, line, line_no = node
+            if line.lower() == "break":
+                if not loop_stack:
+                    raise ParseError(f"Line {line_no}: 'break' used outside of a loop")
+                self.instructions.append(Instruction("JMP", (loop_stack[-1][1],)))
+                return
+            if line.lower() == "continue":
+                if not loop_stack:
+                    raise ParseError(f"Line {line_no}: 'continue' used outside of a loop")
+                self.instructions.append(Instruction("JMP", (loop_stack[-1][0],)))
+                return
             self.instructions.append(self._parse_instruction(line, line_no))
             return
 
@@ -295,7 +339,7 @@ class Parser:
                 [Instruction("LABEL", (start,)), Instruction("EVAL", (cond,)), Instruction("JZ", (end,))]
             )
             for child in node.body:
-                self._compile_node(child)
+                self._compile_node(child, loop_stack + [(start, end)])
             self.instructions.extend([Instruction("JMP", (start,)), Instruction("LABEL", (end,))])
             return
 
@@ -305,11 +349,11 @@ class Parser:
             end = self._new_label("if_end")
             self.instructions.extend([Instruction("EVAL", (cond,)), Instruction("JZ", (else_label,))])
             for child in node.body:
-                self._compile_node(child)
+                self._compile_node(child, loop_stack)
             self.instructions.append(Instruction("JMP", (end,)))
             self.instructions.append(Instruction("LABEL", (else_label,)))
             for child in node.else_body or []:
-                self._compile_node(child)
+                self._compile_node(child, loop_stack)
             self.instructions.append(Instruction("LABEL", (end,)))
             return
 
@@ -319,7 +363,7 @@ class Parser:
                 raise ParseError(f"Invalid function name '{name}'")
             self.instructions.append(Instruction("LABEL", (name,)))
             for child in node.body:
-                self._compile_node(child)
+                self._compile_node(child, loop_stack)
             if not self.instructions or self.instructions[-1].op != "RET":
                 self.instructions.append(Instruction("RET", ()))
             return
