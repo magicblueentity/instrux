@@ -133,6 +133,39 @@ HALT
         _, out = self.run_and_capture(src)
         self.assertEqual(out, ["3"])
 
+    def test_repeat_loop_and_augmented_assignment(self):
+        src = """
+acc = 1
+repeat 4:
+  acc += 2
+print(acc)
+HALT
+"""
+        _, out = self.run_and_capture(src)
+        self.assertEqual(out, ["9"])
+
+    def test_string_expression_features(self):
+        src = """
+name = "ix"
+msg = name + "!" * 2
+print(msg)
+print(len(msg))
+print(chr(ord("A") + 1))
+HALT
+"""
+        _, out = self.run_and_capture(src)
+        self.assertEqual(out, ["ix!!", "4", "B"])
+
+    def test_for_loop_zero_step_finishes_safely(self):
+        src = """
+for i in range(1, 5, 0):
+  print(i)
+print(99)
+HALT
+"""
+        _, out = self.run_and_capture(src)
+        self.assertEqual(out, ["99"])
+
 
 if __name__ == "__main__":
     unittest.main()

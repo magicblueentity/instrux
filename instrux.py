@@ -3,7 +3,7 @@
 
 Major capabilities:
 - Explicit low-level opcodes and labels.
-- Python-style indentation blocks (`if/else`, `while`, `def`).
+- Python-style indentation blocks (`if/else`, `while`, `for`, `repeat`, `def`).
 - Safe expression engine (AST-based, no eval).
 - Stack + memory + call stack VM.
 - CLI options for debug tracing, bytecode dump, and REPL mode.
@@ -85,7 +85,41 @@ class SafeExpression:
         "max": max,
         "int": int,
         "bool": bool,
+        "str": str,
+        "len": len,
+        "ord": ord,
+        "chr": chr,
     }
+
+    @staticmethod
+    def _coerce_bool(v: Value) -> int:
+        return int(bool(v))
+
+    @staticmethod
+    def _ensure_index(v: Value, fn_name: str) -> int:
+        if not isinstance(v, int):
+            raise RuntimeInstruxError(f"Function '{fn_name}' expects integer arguments")
+        return v
+
+    @classmethod
+    def _safe_call(cls, func_name: str, args: List[Value]) -> Value:
+        if func_name == "len":
+            if len(args) != 1 or not isinstance(args[0], str):
+                raise RuntimeInstruxError("Function 'len' expects exactly one string argument")
+            return len(args[0])
+        if func_name == "ord":
+            if len(args) != 1 or not isinstance(args[0], str) or len(args[0]) != 1:
+                raise RuntimeInstruxError("Function 'ord' expects exactly one single-character string")
+            return ord(args[0])
+        if func_name == "chr":
+            if len(args) != 1:
+                raise RuntimeInstruxError("Function 'chr' expects exactly one integer argument")
+            return chr(cls._ensure_index(args[0], "chr"))
+        if func_name in {"abs", "int", "bool"}:
+            if any(isinstance(a, str) for a in args):
+                raise RuntimeInstruxError(f"Function '{func_name}' expects numeric arguments")
+        result = cls._allowed_funcs[func_name](*args)
+        return int(result) if isinstance(result, bool) else result
 
     @classmethod
     def evaluate(cls, expr: str, names: Dict[str, Value]) -> Value:
@@ -110,9 +144,24 @@ class SafeExpression:
         if isinstance(node, ast.BinOp) and type(node.op) in cls._bin_ops:
             left = cls._eval_node(node.left, names)
             right = cls._eval_node(node.right, names)
+            op_t = type(node.op)
+            if op_t is ast.Add:
+                if isinstance(left, int) and isinstance(right, int):
+                    return left + right
+                if isinstance(left, str) and isinstance(right, str):
+                    return left + right
+                raise RuntimeInstruxError("'+' requires both integers or both strings")
+            if op_t is ast.Mult:
+                if isinstance(left, int) and isinstance(right, int):
+                    return left * right
+                if isinstance(left, str) and isinstance(right, int):
+                    return left * right
+                if isinstance(left, int) and isinstance(right, str):
+                    return left * right
+                raise RuntimeInstruxError("'*' supports int*int or string repetition")
             if not isinstance(left, int) or not isinstance(right, int):
                 raise RuntimeInstruxError("Binary operations require integers")
-            return cls._bin_ops[type(node.op)](left, right)
+            return cls._bin_ops[op_t](left, right)
 
         if isinstance(node, ast.UnaryOp) and type(node.op) in cls._unary_ops:
             value = cls._eval_node(node.operand, names)
@@ -124,14 +173,14 @@ class SafeExpression:
             if isinstance(node.op, ast.And):
                 result = 1
                 for v in node.values:
-                    result = int(bool(cls._eval_node(v, names)))
+                    result = cls._coerce_bool(cls._eval_node(v, names))
                     if not result:
                         break
                 return result
             if isinstance(node.op, ast.Or):
                 result = 0
                 for v in node.values:
-                    result = int(bool(cls._eval_node(v, names)))
+                    result = cls._coerce_bool(cls._eval_node(v, names))
                     if result:
                         break
                 return result
@@ -152,10 +201,7 @@ class SafeExpression:
             if func_name not in cls._allowed_funcs:
                 raise RuntimeInstruxError(f"Function '{func_name}' not allowed in expressions")
             args = [cls._eval_node(arg, names) for arg in node.args]
-            if any(isinstance(a, str) for a in args) and func_name in {"abs", "int", "bool"}:
-                raise RuntimeInstruxError(f"Function '{func_name}' expects numeric arguments")
-            result = cls._allowed_funcs[func_name](*args)
-            return int(result) if isinstance(result, bool) else result
+            return cls._safe_call(func_name, args)
 
         raise RuntimeInstruxError(f"Unsupported expression syntax: {ast.dump(node)}")
 
@@ -305,7 +351,7 @@ class Parser:
         raise ParseError("Unexpected end of file: missing block body")
 
     def _header_kind(self, header: str, line_no: int) -> str:
-        for prefix in ("if ", "while ", "def ", "for "):
+        for prefix in ("if ", "while ", "def ", "for ", "repeat "):
             if header.startswith(prefix):
                 return prefix.strip()
         raise ParseError(f"Line {line_no}: unsupported block '{header}'")
@@ -372,6 +418,34 @@ class Parser:
                 self.instructions.append(Instruction("RET", ()))
             return
 
+
+        if node.kind == "repeat":
+            count_expr = node.header[len("repeat ") :].strip()
+            start = self._new_label("repeat_start")
+            cont = self._new_label("repeat_continue")
+            end = self._new_label("repeat_end")
+            count_var = self._new_label("repeat_count")
+            self.instructions.extend(
+                [
+                    Instruction("EVAL", (count_expr,)),
+                    Instruction("STORE", (count_var,)),
+                    Instruction("LABEL", (start,)),
+                    Instruction("EVAL", (f"{count_var} > 0",)),
+                    Instruction("JZ", (end,)),
+                ]
+            )
+            for child in node.body:
+                self._compile_node(child, loop_stack + [(cont, end)])
+            self.instructions.extend(
+                [
+                    Instruction("LABEL", (cont,)),
+                    Instruction("EVAL", (f"{count_var} - 1",)),
+                    Instruction("STORE", (count_var,)),
+                    Instruction("JMP", (start,)),
+                    Instruction("LABEL", (end,)),
+                ]
+            )
+            return
         if node.kind == "for":
             loop_var, start_expr, stop_expr, step_expr = self._parse_for_header(node.header, node.line_no)
             start = self._new_label("for_start")
@@ -388,6 +462,8 @@ class Parser:
                     Instruction("STORE", (stop_var,)),
                     Instruction("EVAL", (step_expr,)),
                     Instruction("STORE", (step_var,)),
+                    Instruction("EVAL", (f"{step_var} != 0",)),
+                    Instruction("JZ", (end,)),
                     Instruction("LABEL", (start,)),
                     Instruction(
                         "EVAL",
@@ -438,6 +514,20 @@ class Parser:
         raise ParseError(f"Line {line_no}: range(...) accepts 1 to 3 positional arguments")
 
     def _parse_instruction(self, line: str, line_no: int) -> Instruction:
+        # Sugar: x <op>= expression
+        aug_assign = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*(\+=|-=|\*=|//=|%=)\s*(.+)$", line)
+        if aug_assign:
+            name, op, expr = aug_assign.groups()
+            op_expr = {
+                "+=": f"{name} + ({expr})",
+                "-=": f"{name} - ({expr})",
+                "*=": f"{name} * ({expr})",
+                "//=": f"{name} // ({expr})",
+                "%=": f"{name} % ({expr})",
+            }[op]
+            self.instructions.append(Instruction("EVAL", (op_expr,)))
+            return Instruction("STORE", (name,))
+
         # Sugar: x = expression
         assign = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$", line)
         if assign:
