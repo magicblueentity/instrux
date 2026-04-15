@@ -19,8 +19,11 @@ This version significantly expands the system:
 - `def name:` function declarations compiled to labels.
 - Auto entry-point jump so function bodies are not executed at startup.
 - Loop controls: `break` and `continue`.
-- Pythonic `for` loops via `range(...)` (supports start/stop/step).
+- Pythonic `for` loops via `range(...)` (supports start/stop/step) plus step-safety guard.
+- `repeat N:` counted loops for concise iteration.
 - `pass` statements for no-op block placeholders.
+- Augmented assignment sugar: `+=`, `-=`, `*=`, `//=`, `%=`.
+- Richer string expressions (`+`, `*`) and expression helpers (`len`, `str`, `ord`, `chr`).
 - Stack ops: `DUP`, `SWAP`, `DROP`.
 - CLI features: `--debug`, `--dump-bytecode`, and `--repl`.
 - Built-in unit tests.
@@ -88,7 +91,7 @@ while i < 10:
   print(i)
 ```
 
-### `for` loops and `pass`
+### `for` loops, `repeat`, and `pass`
 
 ```ix
 total = 0
@@ -97,6 +100,11 @@ for i in range(1, 6):
     pass
   total = total + i
 print(total)
+
+acc = 1
+repeat 4:
+  acc += 2
+print(acc)
 ```
 
 ### Function declarations
@@ -132,7 +140,7 @@ HALT
 - Functions: `CALL`, `RET`, `def name:`.
 - Pythonic loops: `while expr:`, `for x in range(...):`.
 - Output: `PRINT value`, `PRINTS` (prints top of stack).
-- Misc: `EVAL`, `HALT`, `NOP`.
+- Misc: `EVAL`, `HALT`, `NOP`; sugar for augmented assignment.
 
 ---
 
