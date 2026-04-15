@@ -18,7 +18,7 @@ import re
 import shlex
 import sys
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 
 class InstruxError(Exception):
@@ -232,6 +232,7 @@ class Parser:
 
             if stripped.endswith(":"):
                 header = stripped[:-1].strip()
+                header_line_no = i + 1
                 i += 1
                 child_indent = self._next_child_indent(i, base_indent)
                 child, i = self._parse_block(i, child_indent)
@@ -280,7 +281,7 @@ class Parser:
                         body=child,
                         else_body=else_body,
                         elif_nodes=elif_nodes or None,
-                        line_no=i + 1,
+                        line_no=header_line_no,
                     )
                 )
                 continue
@@ -304,7 +305,7 @@ class Parser:
         raise ParseError("Unexpected end of file: missing block body")
 
     def _header_kind(self, header: str, line_no: int) -> str:
-        for prefix in ("if ", "while ", "def "):
+        for prefix in ("if ", "while ", "def ", "for "):
             if header.startswith(prefix):
                 return prefix.strip()
         raise ParseError(f"Line {line_no}: unsupported block '{header}'")
@@ -324,6 +325,9 @@ class Parser:
                 if not loop_stack:
                     raise ParseError(f"Line {line_no}: 'continue' used outside of a loop")
                 self.instructions.append(Instruction("JMP", (loop_stack[-1][0],)))
+                return
+            if line.lower() == "pass":
+                self.instructions.append(Instruction("NOP", ()))
                 return
             self.instructions.append(self._parse_instruction(line, line_no))
             return
@@ -367,6 +371,71 @@ class Parser:
             if not self.instructions or self.instructions[-1].op != "RET":
                 self.instructions.append(Instruction("RET", ()))
             return
+
+        if node.kind == "for":
+            loop_var, start_expr, stop_expr, step_expr = self._parse_for_header(node.header, node.line_no)
+            start = self._new_label("for_start")
+            cont = self._new_label("for_continue")
+            end = self._new_label("for_end")
+            stop_var = self._new_label("for_stop")
+            step_var = self._new_label("for_step")
+
+            self.instructions.extend(
+                [
+                    Instruction("EVAL", (start_expr,)),
+                    Instruction("STORE", (loop_var,)),
+                    Instruction("EVAL", (stop_expr,)),
+                    Instruction("STORE", (stop_var,)),
+                    Instruction("EVAL", (step_expr,)),
+                    Instruction("STORE", (step_var,)),
+                    Instruction("LABEL", (start,)),
+                    Instruction(
+                        "EVAL",
+                        (
+                            f"(({step_var} > 0 and {loop_var} < {stop_var}) "
+                            f"or ({step_var} < 0 and {loop_var} > {stop_var}))",
+                        ),
+                    ),
+                    Instruction("JZ", (end,)),
+                ]
+            )
+            for child in node.body:
+                self._compile_node(child, loop_stack + [(cont, end)])
+            self.instructions.extend(
+                [
+                    Instruction("LABEL", (cont,)),
+                    Instruction("EVAL", (f"{loop_var} + {step_var}",)),
+                    Instruction("STORE", (loop_var,)),
+                    Instruction("JMP", (start,)),
+                    Instruction("LABEL", (end,)),
+                ]
+            )
+            return
+
+    def _parse_for_header(self, header: str, line_no: int) -> Tuple[str, str, str, str]:
+        m = re.fullmatch(r"for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+(.+)", header)
+        if not m:
+            raise ParseError(f"Line {line_no}: invalid for-loop header")
+        name, iterable_expr = m.groups()
+        try:
+            iterable_ast = ast.parse(iterable_expr, mode="eval").body
+        except SyntaxError as exc:
+            raise ParseError(f"Line {line_no}: invalid for-loop iterable: {exc}") from exc
+        if (
+            not isinstance(iterable_ast, ast.Call)
+            or not isinstance(iterable_ast.func, ast.Name)
+            or iterable_ast.func.id != "range"
+            or iterable_ast.keywords
+        ):
+            raise ParseError(f"Line {line_no}: for-loops currently require range(...)")
+        arg_texts = [ast.unparse(a).strip() for a in iterable_ast.args]
+        if len(arg_texts) == 1:
+            return name, "0", arg_texts[0], "1"
+        if len(arg_texts) == 2:
+            return name, arg_texts[0], arg_texts[1], "1"
+        if len(arg_texts) == 3:
+            return name, arg_texts[0], arg_texts[1], arg_texts[2]
+        raise ParseError(f"Line {line_no}: range(...) accepts 1 to 3 positional arguments")
 
     def _parse_instruction(self, line: str, line_no: int) -> Instruction:
         # Sugar: x = expression
