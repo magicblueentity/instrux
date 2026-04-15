@@ -93,6 +93,46 @@ HALT
         with self.assertRaises(ParseError):
             compile_source("break\nHALT\n")
 
+    def test_for_loop_range_variants(self):
+        src = """
+sum_a = 0
+for i in range(5):
+  sum_a = sum_a + i
+print(sum_a)
+
+sum_b = 0
+for i in range(2, 8, 2):
+  sum_b = sum_b + i
+print(sum_b)
+HALT
+"""
+        _, out = self.run_and_capture(src)
+        self.assertEqual(out, ["10", "12"])
+
+    def test_for_loop_negative_step_and_continue(self):
+        src = """
+acc = 0
+for i in range(5, -1, -1):
+  if i % 2 == 0:
+    continue
+  acc = acc + i
+print(acc)
+HALT
+"""
+        _, out = self.run_and_capture(src)
+        self.assertEqual(out, ["9"])
+
+    def test_pass_statement(self):
+        src = """
+x = 3
+if x > 0:
+  pass
+print(x)
+HALT
+"""
+        _, out = self.run_and_capture(src)
+        self.assertEqual(out, ["3"])
+
 
 if __name__ == "__main__":
     unittest.main()
