@@ -2,7 +2,7 @@ import io
 import unittest
 from contextlib import redirect_stdout
 
-from instrux import compile_source, run_source
+from instrux import ParseError, compile_source, run_source
 
 
 class InstruxTests(unittest.TestCase):
@@ -57,6 +57,41 @@ HALT
 """
         instructions = compile_source(src)
         self.assertEqual(instructions[0].op, "JMP")
+
+    def test_elif_chain(self):
+        src = """
+x = 7
+if x < 3:
+  print(1)
+elif x < 5:
+  print(2)
+elif x < 9:
+  print(3)
+else:
+  print(4)
+HALT
+"""
+        _, out = self.run_and_capture(src)
+        self.assertEqual(out, ["3"])
+
+    def test_break_and_continue(self):
+        src = """
+i = 0
+while i < 6:
+  i = i + 1
+  if i % 2 == 0:
+    continue
+  if i > 4:
+    break
+  print(i)
+HALT
+"""
+        _, out = self.run_and_capture(src)
+        self.assertEqual(out, ["1", "3"])
+
+    def test_break_outside_loop_errors(self):
+        with self.assertRaises(ParseError):
+            compile_source("break\nHALT\n")
 
 
 if __name__ == "__main__":
