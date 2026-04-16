@@ -3,6 +3,7 @@ import unittest
 from contextlib import redirect_stdout
 
 from instrux import ParseError, compile_source, run_source
+from instrux import RuntimeInstruxError
 
 
 class InstruxTests(unittest.TestCase):
@@ -165,6 +166,47 @@ HALT
 """
         _, out = self.run_and_capture(src)
         self.assertEqual(out, ["99"])
+
+    def test_register_arithmetic_and_cmp_jumps(self):
+        src = """
+MOV R0, 5
+MOV R1, 3
+ADD R0, R1
+CMP R0, 8
+JE ok
+PRINT 0
+HALT
+ok:
+PRINT R0
+HALT
+"""
+        _, out = self.run_and_capture(src)
+        self.assertEqual(out, ["8"])
+
+    def test_data_and_const_directives(self):
+        src = """
+.const LIMIT, 4 + 1
+.data total, 0
+MOV R0, 0
+loop:
+ADD total, 1
+INC R0
+CMP R0, LIMIT
+JL loop
+PRINT total
+HALT
+"""
+        _, out = self.run_and_capture(src)
+        self.assertEqual(out, ["5"])
+
+    def test_cannot_modify_constant(self):
+        src = """
+.const X, 9
+MOV X, 1
+HALT
+"""
+        with self.assertRaises(RuntimeInstruxError):
+            run_source(src)
 
 
 if __name__ == "__main__":
