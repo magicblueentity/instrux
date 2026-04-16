@@ -278,6 +278,10 @@ class Parser:
 
             if stripped.endswith(":"):
                 header = stripped[:-1].strip()
+                if not any(header.startswith(prefix) for prefix in ("if ", "while ", "def ", "for ", "repeat ")):
+                    block.append(("inst", stripped, i + 1))
+                    i += 1
+                    continue
                 header_line_no = i + 1
                 i += 1
                 child_indent = self._next_child_indent(i, base_indent)
@@ -514,6 +518,34 @@ class Parser:
         raise ParseError(f"Line {line_no}: range(...) accepts 1 to 3 positional arguments")
 
     def _parse_instruction(self, line: str, line_no: int) -> Instruction:
+        if line.lower().startswith(".const "):
+            payload = line[len(".const ") :].strip()
+            if "," in payload:
+                name, expr = payload.split(",", 1)
+            else:
+                parts = payload.split(None, 1)
+                if len(parts) != 2:
+                    raise ParseError(f"Line {line_no}: .const expects name and expression")
+                name, expr = parts
+            name, expr = name.strip(), expr.strip()
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                raise ParseError(f"Line {line_no}: invalid constant name '{name}'")
+            return Instruction("CONST", (name, expr))
+
+        if line.lower().startswith(".data "):
+            payload = line[len(".data ") :].strip()
+            if "," in payload:
+                name, value = payload.split(",", 1)
+            else:
+                parts = payload.split(None, 1)
+                if len(parts) != 2:
+                    raise ParseError(f"Line {line_no}: .data expects name and value")
+                name, value = parts
+            name, value = name.strip(), value.strip()
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                raise ParseError(f"Line {line_no}: invalid data symbol '{name}'")
+            return Instruction("DATA", (name, value))
+
         # Sugar: x <op>= expression
         aug_assign = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*(\+=|-=|\*=|//=|%=)\s*(.+)$", line)
         if aug_assign:
@@ -577,6 +609,9 @@ class VM:
         self.pc = 0
         self.stack: List[Value] = []
         self.memory: Dict[str, Value] = {}
+        self.registers: Dict[str, int] = {f"R{i}": 0 for i in range(8)}
+        self.const_names: set[str] = set()
+        self.flags: Dict[str, int] = {"ZF": 0, "LF": 0, "GF": 0}
         self.call_stack: List[int] = []
         self.labels = self._index_labels()
 
@@ -589,6 +624,8 @@ class VM:
 
     def _resolve(self, token: str) -> Value:
         token = token.strip()
+        if token in self.registers:
+            return self.registers[token]
         if token in self.memory:
             return self.memory[token]
         if re.fullmatch(r"-?\d+", token):
@@ -596,6 +633,18 @@ class VM:
         if (token.startswith('"') and token.endswith('"')) or (token.startswith("'") and token.endswith("'")):
             return token[1:-1]
         raise RuntimeInstruxError(f"Unknown value '{token}'")
+
+    def _assign_name(self, name: str, value: Value) -> None:
+        if name in self.registers:
+            if not isinstance(value, int):
+                raise RuntimeInstruxError(f"Register '{name}' only supports integer values")
+            self.registers[name] = value
+            return
+        if name in self.const_names:
+            raise RuntimeInstruxError(f"Cannot modify constant '{name}'")
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            raise RuntimeInstruxError(f"Invalid variable name '{name}'")
+        self.memory[name] = value
 
     def _int(self, v: Value, context: str) -> int:
         if not isinstance(v, int):
@@ -625,7 +674,13 @@ class VM:
             inst = self.instructions[self.pc]
             op, args = inst.op, inst.args
             if self.debug:
-                print(f"[pc={self.pc}] {inst} | stack={self.stack} mem={self.memory}", file=sys.stderr)
+                print(
+                    (
+                        f"[pc={self.pc}] {inst} | stack={self.stack} "
+                        f"reg={self.registers} mem={self.memory} flags={self.flags}"
+                    ),
+                    file=sys.stderr,
+                )
 
             if op == "LABEL":
                 self.pc += 1
@@ -640,11 +695,31 @@ class VM:
 
             if op == "MOV":
                 if len(args) != 2:
-                    raise RuntimeInstruxError("MOV expects: MOV name, value")
+                    raise RuntimeInstruxError("MOV expects: MOV target, value")
                 name, token = args
-                if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
-                    raise RuntimeInstruxError(f"Invalid variable name '{name}'")
-                self.memory[name] = self._resolve(token)
+                self._assign_name(name, self._resolve(token))
+                self.pc += 1
+                continue
+
+            if op == "CONST":
+                if len(args) != 2:
+                    raise RuntimeInstruxError("CONST expects: CONST name, expression")
+                name, expr = args
+                if name in self.registers:
+                    raise RuntimeInstruxError(f"Cannot declare register '{name}' as constant")
+                if name in self.const_names:
+                    raise RuntimeInstruxError(f"Constant '{name}' already defined")
+                value = SafeExpression.evaluate(expr, {**self.memory, **self.registers})
+                self.memory[name] = value
+                self.const_names.add(name)
+                self.pc += 1
+                continue
+
+            if op == "DATA":
+                if len(args) != 2:
+                    raise RuntimeInstruxError("DATA expects: DATA name, value")
+                name, value_token = args
+                self._assign_name(name, self._resolve(value_token))
                 self.pc += 1
                 continue
 
@@ -667,7 +742,7 @@ class VM:
                     raise RuntimeInstruxError("POP expects variable name")
                 if not self.stack:
                     raise RuntimeInstruxError("POP on empty stack")
-                self.memory[args[0]] = self.stack.pop()
+                self._assign_name(args[0], self.stack.pop())
                 self.pc += 1
                 continue
 
@@ -685,7 +760,7 @@ class VM:
                     raise RuntimeInstruxError("STORE expects variable name")
                 if not self.stack:
                     raise RuntimeInstruxError("STORE with empty stack")
-                self.memory[args[0]] = self.stack.pop()
+                self._assign_name(args[0], self.stack.pop())
                 self.pc += 1
                 continue
 
@@ -711,30 +786,65 @@ class VM:
                 continue
 
             if op == "ADD":
-                self._binary_int(lambda a, b: a + b, "ADD")
+                if len(args) == 0:
+                    self._binary_int(lambda a, b: a + b, "ADD")
+                elif len(args) == 2:
+                    dst, src = args
+                    self._assign_name(dst, self._int(self._resolve(dst), "ADD") + self._int(self._resolve(src), "ADD"))
+                else:
+                    raise RuntimeInstruxError("ADD expects either 0 args (stack mode) or 2 args (register mode)")
                 self.pc += 1
                 continue
             if op == "SUB":
-                self._binary_int(lambda a, b: a - b, "SUB")
+                if len(args) == 0:
+                    self._binary_int(lambda a, b: a - b, "SUB")
+                elif len(args) == 2:
+                    dst, src = args
+                    self._assign_name(dst, self._int(self._resolve(dst), "SUB") - self._int(self._resolve(src), "SUB"))
+                else:
+                    raise RuntimeInstruxError("SUB expects either 0 args (stack mode) or 2 args (register mode)")
                 self.pc += 1
                 continue
             if op == "MUL":
-                self._binary_int(lambda a, b: a * b, "MUL")
+                if len(args) == 0:
+                    self._binary_int(lambda a, b: a * b, "MUL")
+                elif len(args) == 2:
+                    dst, src = args
+                    self._assign_name(dst, self._int(self._resolve(dst), "MUL") * self._int(self._resolve(src), "MUL"))
+                else:
+                    raise RuntimeInstruxError("MUL expects either 0 args (stack mode) or 2 args (register mode)")
                 self.pc += 1
                 continue
             if op == "DIV":
-                self._binary_int(lambda a, b: int(a / b), "DIV")
+                if len(args) == 0:
+                    self._binary_int(lambda a, b: int(a / b), "DIV")
+                elif len(args) == 2:
+                    dst, src = args
+                    self._assign_name(dst, int(self._int(self._resolve(dst), "DIV") / self._int(self._resolve(src), "DIV")))
+                else:
+                    raise RuntimeInstruxError("DIV expects either 0 args (stack mode) or 2 args (register mode)")
                 self.pc += 1
                 continue
             if op == "MOD":
-                self._binary_int(lambda a, b: a % b, "MOD")
+                if len(args) == 0:
+                    self._binary_int(lambda a, b: a % b, "MOD")
+                elif len(args) == 2:
+                    dst, src = args
+                    self._assign_name(dst, self._int(self._resolve(dst), "MOD") % self._int(self._resolve(src), "MOD"))
+                else:
+                    raise RuntimeInstruxError("MOD expects either 0 args (stack mode) or 2 args (register mode)")
                 self.pc += 1
                 continue
 
             if op == "CMP":
                 if len(args) != 2:
                     raise RuntimeInstruxError("CMP expects: CMP left, right")
-                self.stack.append(1 if self._resolve(args[0]) == self._resolve(args[1]) else 0)
+                left = self._int(self._resolve(args[0]), "CMP")
+                right = self._int(self._resolve(args[1]), "CMP")
+                self.flags["ZF"] = int(left == right)
+                self.flags["LF"] = int(left < right)
+                self.flags["GF"] = int(left > right)
+                self.stack.append(1 if left == right else 0)
                 self.pc += 1
                 continue
 
@@ -747,19 +857,45 @@ class VM:
             if op == "JZ":
                 if len(args) != 1:
                     raise RuntimeInstruxError("JZ expects label")
-                if not self.stack:
-                    raise RuntimeInstruxError("JZ needs condition on stack")
-                cond = self._int(self.stack.pop(), "JZ")
+                if self.stack:
+                    cond = self._int(self.stack.pop(), "JZ")
+                else:
+                    cond = self.flags["ZF"]
                 self.pc = self._jump(args[0]) if cond == 0 else self.pc + 1
                 continue
 
             if op == "JNZ":
                 if len(args) != 1:
                     raise RuntimeInstruxError("JNZ expects label")
-                if not self.stack:
-                    raise RuntimeInstruxError("JNZ needs condition on stack")
-                cond = self._int(self.stack.pop(), "JNZ")
+                if self.stack:
+                    cond = self._int(self.stack.pop(), "JNZ")
+                else:
+                    cond = self.flags["ZF"]
                 self.pc = self._jump(args[0]) if cond != 0 else self.pc + 1
+                continue
+
+            if op in {"JE", "JNE", "JL", "JLE", "JG", "JGE"}:
+                if len(args) != 1:
+                    raise RuntimeInstruxError(f"{op} expects label")
+                label = args[0]
+                condition = {
+                    "JE": self.flags["ZF"] == 1,
+                    "JNE": self.flags["ZF"] == 0,
+                    "JL": self.flags["LF"] == 1,
+                    "JLE": self.flags["LF"] == 1 or self.flags["ZF"] == 1,
+                    "JG": self.flags["GF"] == 1,
+                    "JGE": self.flags["GF"] == 1 or self.flags["ZF"] == 1,
+                }[op]
+                self.pc = self._jump(label) if condition else self.pc + 1
+                continue
+
+            if op in {"INC", "DEC"}:
+                if len(args) != 1:
+                    raise RuntimeInstruxError(f"{op} expects target")
+                target = args[0]
+                delta = 1 if op == "INC" else -1
+                self._assign_name(target, self._int(self._resolve(target), op) + delta)
+                self.pc += 1
                 continue
 
             if op == "CALL":

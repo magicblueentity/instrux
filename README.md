@@ -25,6 +25,9 @@ This version significantly expands the system:
 - Augmented assignment sugar: `+=`, `-=`, `*=`, `//=`, `%=`.
 - Richer string expressions (`+`, `*`) and expression helpers (`len`, `str`, `ord`, `chr`).
 - Stack ops: `DUP`, `SWAP`, `DROP`.
+- Assembler directives: `.const NAME, expr` (immutable symbols), `.data NAME, value` (data symbols).
+- Register machine model: `R0`..`R7` with two-operand arithmetic (`ADD R0, 1`, etc.).
+- Flag-based branches after `CMP`: `JE`, `JNE`, `JL`, `JLE`, `JG`, `JGE`.
 - CLI features: `--debug`, `--dump-bytecode`, and `--repl`.
 - Built-in unit tests.
 
@@ -133,10 +136,12 @@ HALT
 ## Core instructions
 
 - Data/variables: `MOV`, `LOAD`, `STORE`, `PUSH`, `POP`.
+- Assembler symbols: `.const`, `.data`.
+- Registers: `R0` .. `R7`.
 - Stack helpers: `DUP`, `SWAP`, `DROP`.
-- Arithmetic: `ADD`, `SUB`, `MUL`, `DIV`, `MOD`.
-- Comparison helpers: `CMP`, plus expression comparisons through `EVAL`.
-- Control flow: `JMP`, `JZ`, `JNZ`, labels (`name:`).
+- Arithmetic: `ADD`, `SUB`, `MUL`, `DIV`, `MOD` (stack mode or `OP dst, src` mode), plus `INC`/`DEC`.
+- Comparison helpers: `CMP` (sets flags + pushes equality result), plus expression comparisons through `EVAL`.
+- Control flow: `JMP`, `JZ`, `JNZ`, flag jumps (`JE`, `JNE`, `JL`, `JLE`, `JG`, `JGE`), labels (`name:`).
 - Functions: `CALL`, `RET`, `def name:`.
 - Pythonic loops: `while expr:`, `for x in range(...):`.
 - Output: `PRINT value`, `PRINTS` (prints top of stack).
